@@ -1,0 +1,3 @@
+,batch_size,epochs,hidden_dim,lr
+data_alpha_-0.5_gamma0.3_rho1_-0.5_rho2_0.4_n1000_rep1.csv_denom,16.0,1.0,16.0,0.01
+data_alpha_-0.5_gamma0.3_rho1_-0.5_rho2_0.4_n1000_rep1.csv_numer,16.0,1.0,16.0,0.01

@@ -1,0 +1,663 @@
+---
+title: "IPW4CausalInference"
+author: "Awol Seid"
+date: "2025-02-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Causal effect of HAART use on mortality in HIV-infected patients
+
+Survival data measured in 1200 HIV-infected patients. Start of follow-up is HIV seroconversion. Each row corresponds to a 100 day period of follow-up time. Patients can initiate highly active anti-retroviral therapy (HAART) during follow-up. We will estimate the causal effect of HAART on mortality using this dataset, while adjusting both for possible confounding by CD4 count, and for informative censoring due to the effect of CD4 count on dropout, using IPW. In this example, CD4 count is a time-varying covariate.
+```{r}
+library(ipw)
+library(survival)
+```
+## HAART Dataset
+```{r}
+data("haartdat")
+data_df = haartdat
+data_df[1:50,]
+data_df <- data_df[order(order(data_df$patient, data_df$fuptime)),]
+data_df[1:50,]
+```
+```{r}
+exposure_model <- coxph(Surv(tstart, fuptime, haartind)~sex+age+cd4.sqrt, 
+                        data = data_df)
+summary(exposure_model)
+```
+```{r}
+censor_model <- coxph(Surv(tstart, fuptime, dropout)~sex+age+cd4.sqrt, 
+                      data = data_df)
+summary(censor_model)
+```
+```{r}
+surv_model <- coxph(Surv(tstart, fuptime, event)~haartind, 
+                      data = data_df)
+summary(surv_model)
+```
+
+```{r}
+surv_model <- coxph(Surv(tstart, fuptime, event)~haartind+cluster(patient), 
+                      data = data_df)
+summary(surv_model)
+```
+
+## Preparation
+```{r}
+id=data_df$patient
+id[1:15]
+tstart=data_df$tstart
+tstart[1:15]
+obs_time=data_df$fuptime
+obs_time[1:15]
+exposure=data_df$haartind
+exposure[1:15]
+```
+```{r}
+tempdat_df <- data.frame(id=id, obs_time=obs_time, exposure = exposure)
+tempdat_df[1:15,]
+```
+
+```{r}
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:15,]
+```
+
+
+
+```{r}
+tempdat_df$selvar <- unlist(lapply(split(tempdat_df$exposure, tempdat_df$id), 
+                                function(x) {
+                                  if (!is.na(match(1, x))) {
+                                    return(c(rep(1, match(1, x)), 
+                                             rep(0, length(x) - match(1, x))))
+                                    }
+                                  else {return(rep(1, length(x)))}
+                                  }
+                                )
+                         )
+
+tempdat_df
+```
+## Treatment Weight
+
+### Numerator Model
+
+```{r}
+# Treatment denominator model
+den_model <- coxph(Surv(tstart, obs_time, exposure)~sex+age+cd4.sqrt,
+               data = data_df, subset = tempdat_df$selvar == 1)
+summary(den_model)
+```
+
+```{r}
+# Treatment numerator model
+num_model <- coxph(Surv(tstart, obs_time, exposure)~sex+age,
+               data = data_df, subset = tempdat_df$selvar == 1)
+summary(num_model)
+```
+Cumulative Baseline Hazard $H_0(t)$: The accumulated risk over time, defined as:
+$$H_0(t)=\int_0^th_0(u)du$$ is what `basehaz()` returns, where $h_0(t)$ is the instantaneous risk of an event occurring at time $t$.
+```{r}
+model=den_model
+cum_bh_df <- basehaz(model, centered = TRUE)
+cum_bh_df
+```
+```{r}
+cum_bh_df <- data.frame(obs_time=cum_bh_df$time, cum_bh=cum_bh_df$hazard)
+cum_bh_df
+```
+
+```{r}
+bh_df=cum_bh_df
+bh_df$bh[1] <- bh_df$cum_bh[1]
+bh_df$bh[1]
+```
+```{r}
+bh_df
+```
+
+```{r}
+bh_df$bh[2:nrow(bh_df)] <- diff(bh_df$cum_bh, 1)
+bh_df
+```
+
+
+
+```{r}
+bh_df$cum_bh <- NULL
+bh_df
+```
+
+```{r}
+obs_time_df <- data.frame(obs_time = sort(unique(tempdat_df$obs_time)))
+obs_time_df
+```
+
+```{r}
+temp_df <- merge(obs_time_df, data.frame(obs_time = cum_bh_df$obs_time, 
+                                         bh_cum = cum_bh_df$cum_bh), 
+                 by = "obs_time", all.x = TRUE)
+temp_df
+```
+
+```{r}
+rm(cum_bh_df)
+```
+
+
+```{r}
+# I do not understand the purpose of this code
+
+if (is.na(temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat_df$obs_time))])) 
+    temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat$obs_time))] <- 0
+
+temp_df$bh_cum <- approx(x = temp_df$obs_time, y = temp_df$bh_cum, 
+                         xout = temp_df$obs_time, method = "constant", 
+                         rule =2)$y
+temp_df$bh_um[1:10]
+temp_df
+
+```
+
+```{r}
+temp_df$bh[1] <- temp_df$bh_cum[1]
+temp_df$bh[1]
+temp_df$bh[2:nrow(temp_df)] <- diff(temp_df$bh_cum, 1)
+temp_df
+```
+```{r}
+temp_df$bh_cum <- NULL
+temp_df
+```
+
+
+```{r}
+tempdat_df <- merge(tempdat_df, temp_df, by = "obs_time", all.x = TRUE)
+tempdat_df
+rm(temp_df)
+```
+```{r}
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df
+```
+```{r}
+sum(is.na(tempdat_df$bh))
+```
+```{r}
+tempdat_df$risk[tempdat_df$selvar == 1] <- predict(model, type = "risk", centered = TRUE)
+tempdat_df
+```
+```{r}
+sum(is.na(tempdat_df$risk))
+```
+```{r}
+tempdat_df[tempdat_df$id == 915, ]
+```
+
+```{r}
+max(tempdat_df$risk>5, na.rm = TRUE)
+```
+
+```{r}
+tempdat_df$hazard[tempdat_df$selvar == 1] <- with(tempdat_df[tempdat_df$selvar == 1, ], bh * risk)
+tempdat_df
+```
+```{r}
+tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+```
+
+
+
+```{r}
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 0)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 0),
+    ], exp(-1 * bh * risk))
+tempdat_df
+```
+```{r}
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 1)
+  ] <- 1 - with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 1), ],
+    exp(-1 * bh * risk))
+tempdat_df
+```
+```{r}
+sum(is.na(tempdat_df$h_prob))
+sum(tempdat_df$selvar==1)
+```
+
+```{r}
+tempdat_df$h_prob[tempdat_df$selvar == 0] <- 1
+tempdat_df
+```
+```{r}
+sum(is.na(tempdat_df$h_prob))
+```
+
+```{r}
+tempdat_df$cum_prod_prob <- unsplit(lapply(split(tempdat_df$h_prob, tempdat_df$id), function(x) cumprod(x)), tempdat_df$id)
+tempdat_df
+```
+```{r}
+tempdat_df[14410:14420,]
+```
+```{r}
+tempdat_df[tempdat_df$id == 915, ]
+```
+
+
+```{r}
+prob_cum_numer=tempdat_df$cum_prod_prob
+prob_num=prob_cum_numer
+summary(prob_num)
+```
+```{r}
+prob_cum_denom=tempdat_df$cum_prod_prob
+prob_denom=prob_cum_denom
+summary(prob_denom)
+```
+```{r}
+summary(1/prob_denom)
+```
+
+```{r}
+stab_treat_wi=prob_num/prob_denom
+summary(stab_treat_wi)
+```
+######### Causal Survival Model without Censoring Weight
+```{r}
+model <- coxph(Surv(tstart, fuptime, event)~haartind, data = data_df, weights=stab_treat_wi)
+summary(model)
+```
+
+
+
+############## FUNCTION
+
+```{r}
+get_IPWs=function(data_df) 
+{
+id=data_df$patient
+id[1:15]
+tstart=data_df$tstart
+tstart[1:15]
+obs_time=data_df$fuptime
+obs_time[1:15]
+exposure=data_df$dropout
+exposure[1:15]
+
+tempdat_df <- data.frame(id=id, obs_time=obs_time, exposure = exposure)
+tempdat_df[1:15,]
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:15,]
+
+
+
+tempdat_df$selvar <- unlist(lapply(split(tempdat_df$exposure, tempdat_df$id), 
+                                function(x) {
+                                  if (!is.na(match(1, x))) {
+                                    return(c(rep(1, match(1, x)), 
+                                             rep(0, length(x) - match(1, x))))
+                                    }
+                                  else {return(rep(1, length(x)))}
+                                  }
+                                )
+                         )
+
+tempdat_df[1:20,]
+
+
+# Treatment numerator/denominator model
+model <- coxph(Surv(tstart, obs_time, exposure)~sex+age+cd4.sqrt,
+               data = data_df, subset = tempdat_df$selvar == 1)
+summary(model)
+
+
+bh_df <- basehaz(model, centered = TRUE)
+bh_df
+
+
+bh_df1 <- data.frame(obs_time=bh_df$time, cum_bh=bh_df$hazard)
+bh_df1
+bh_df1$bh[1] <- bh_df1$cum_bh[1]
+bh_df1$bh[1]
+bh_df1$bh[2:nrow(bh_df1)] <- diff(bh_df1$cum_bh, 1)
+bh_df1
+bh_df1$cum_bh <- NULL
+bh_df1
+
+
+
+obs_time_df <- data.frame(obs_time = sort(unique(tempdat_df$obs_time)))
+obs_time_df
+temp_df <- merge(obs_time_df, data.frame(obs_time = bh_df$time, 
+                                         bh_cum = bh_df$hazard), 
+                 by = "obs_time", all.x = TRUE)
+temp_df[1:10,]
+rm(bh_df)
+
+
+# I do not understand the purpose of this code
+
+if (is.na(temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat_df$obs_time))])) 
+    temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat$obs_time))] <- 0
+
+temp_df$bh_cum <- approx(x = temp_df$obs_time, y = temp_df$bh_cum, 
+                         xout = temp_df$obs_time, method = "constant", 
+                         rule =2)$y
+temp_df$bh_um[1:10]
+temp_df[1:10,]
+
+
+temp_df$bh[1] <- temp_df$bh_cum[1]
+temp_df$bh[1]
+temp_df$bh[2:nrow(temp_df)] <- diff(temp_df$bh_cum, 1)
+temp_df[1:10,]
+
+
+temp_df$bh_cum <- NULL
+temp_df[1:10,]
+
+
+tempdat_df <- merge(tempdat_df, temp_df, by = "obs_time", all.x = TRUE)
+tempdat_df[1:10,]
+rm(temp_df)
+
+
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:10,]
+
+
+tempdat_df$risk[tempdat_df$selvar == 1] <- predict(model, type = "risk", centered = TRUE)
+tempdat_df[1:10,]
+tempdat_df$hazard[tempdat_df$selvar == 1] <- with(tempdat_df[tempdat_df$selvar == 1, ], bh * risk)
+tempdat_df[1:20,]
+
+
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 0)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 0),
+    ], exp(-1 * bh * risk))
+tempdat_df[1:20,]
+
+
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 1)
+  ] <- 1 - with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 1), ],
+    exp(-1 * bh * risk))
+tempdat_df[1:20,]
+
+
+tempdat_df$h_prob[tempdat_df$selvar == 0] <- 1
+tempdat_df[1:20, ]
+
+
+tempdat_df$cum_prod_prob <- unsplit(lapply(split(tempdat_df$h_prob, tempdat_df$id), function(x) cumprod(x)), tempdat_df$id)
+tempdat_df[1:20,]
+
+return(tempdat_df$cum_prod_prob)
+}
+
+```
+
+```{r}
+numer_Cprobs=get_IPWs(data_df)
+numer_Cprobs=numer_Cprobs
+summary(numer_Cprobs)
+```
+```{r}
+denom_Cprobs=get_IPWs(data_df)
+denom_Cprobs=denom_Cprobs
+summary(denom_Cprobs)
+```
+```{r}
+censor_weights=numer_Cprobs/denom_Cprobs
+summary(censor_weights)
+```
+Correct:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.5640  0.9875  0.9998  0.9986  1.0103  2.3348 
+
+
+
+```{r}
+numer_probs=get_IPWs(data_df)
+numer_probs=numer_probs
+summary(numer_probs)
+```
+
+
+```{r}
+denom_probs=get_IPWs(data_df)
+denom_probs=denom_probs
+summary(denom_probs)
+```
+```{r}
+treat_weights=numer_probs/denom_probs
+summary(treat_weights)
+```
+
+
+```{r}
+model <- coxph(Surv(tstart, fuptime, event)~haartind, data = data_df, weights=treat_weights*censor_weights)
+summary(model)
+```
+
+######### Censoring Model
+
+## Censoring Weight
+
+```{r}
+temp2 <- ipwtm(exposure = dropout, family = "survival",
+ numerator = ~ sex + age, denominator = ~ cd4.sqrt + sex + age,
+ id = patient, tstart = tstart, timevar = fuptime, type = "first",
+ data = haartdat)
+summary(temp2$ipw.weights)
+```
+
+
+
+
+######### Causal Survival Model
+
+
+
+
+
+
+
+
+
+
+
+        
+        
+        tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 0)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 0),
+    ], exp(-1 * bh * risk))
+tempdat_df[1:20,]
+
+
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 1)
+  ] <- 1 - with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 1), ],
+    exp(-1 * bh * risk))
+tempdat_df[1:20,]
+        
+
+        if (type == "cens") {
+            tempdat$p.denominator[with(tempdat, selvar == 1 & 
+                exposure == 1)] <- with(tempdat[with(tempdat, 
+                selvar == 1 & exposure == 1), ], exp(-1 * bashaz.denominator * 
+                risk.denominator))
+        }
+        
+        
+############
+# Causal effect of tuberculosis on mortality in HIV-infected patients
+Our third example is similar to the previous example but with measurements made at
+irregular intervals of follow-up time. We estimate the causal effect of active tuberculosis (TB)
+on mortality in HIV-positive individuals, adjusted for possible confounding by time-varying
+CD4 count using IPW. We smooth time-varying CD4 using a random effects model, because
+it is the underlying "true" CD4, separate from short-term fluctuations and measurement error,
+that is a confounder for the effect of TB. The simulated datasets basdat and timedat are
+used in this example. \\
+
+Dataset basdat contains time-fixed variables, measured in 386 HIV-positive
+individuals: id is the patient ID, Ttb is the time of first active tuberculosis, measured in days since HIV seroconversion, 
+Tdeath is the time of death, measured in days since HIV seroconversion, 
+Tend is the individual end time (either death or censoring), measured in days since HIV
+seroconversion.
+
+######### Time-fixed data
+```{r}
+library("ipw")
+data("basdat")
+
+tfdata_df=basdat
+tfdata_df
+```
+
+Dataset timedat contains longitudinal measurements made in the same 386 HIV-positive
+individuals as basdat: id is the patient ID, fuptime is follow-up time, in days since HIV seroconversion,
+cd4count is CD4 count, measured at fuptime.
+
+```{r}
+data("timedat")
+tvdata_df=timedat
+tvdata_df[1:20,]
+```
+
+Note that these data were simulated by the authors using the algorithm described in Van der Wal, Prins,
+Lumbreras, and Geskus (2009). Therefore, CD4 count at a certain time point is affected by
+the TB status right before that time point. TB status at a certain time point is affected by
+CD4 count at that specific time point.    
+
+Some processing of the original data is necessary. We check if there is more than one CD4
+measurement taken on the same day within each patient:
+```{r}
+table(duplicated(tvdata_df[, c("id", "fuptime")]))
+```
+which is not the case. Because of skewness, we compute the square root of CD4 count:
+```{r}
+tvdata_df$cd4.sqrt <- sqrt(tvdata_df$cd4count)
+summary(tvdata_df$cd4count)
+summary(tvdata_df$cd4.sqrt)
+```
+Add the time of first active TB to timedat, and compute tb.lag, the time-varying TB status
+one day before the measurement time (which is necessary for reasons that are explained
+below):
+```{r}
+merged_df <- merge(tvdata_df, tfdata_df[,c("id","Ttb")], by = "id", all.x = TRUE)
+merged_df[50:70,]
+```
+```{r}
+merged_df$tb.lag <- ifelse(with(merged_df, !is.na(Ttb) & fuptime > Ttb), 1, 0)
+merged_df
+```
+To be able to impute CD4 count at time points other than the measurement times, which is
+necessary when fitting the MSM (see below), and to smooth the original measurements, we
+fit the random effects model
+$$\sqrt{L_i(t)}=\alpha_{1i}+\alpha_{1i}t+\beta_2A_i(t-1)$$
+with $t$ follow-up time (days since HIV seroconversion), $L(t)$ CD4 count, and $A(t)$ time-varying
+TB status. Random effects $\alpha_{1i}$ and $\alpha_{2i}$ are assumed to be normally distributed with mean
+$\bm{\beta}'=(\beta_0,\beta_1)$) and covariance matrix $\Sigma$. The model includes a fixed effect for TB,
+$\beta_2$. Because CD4 is affected by the TB status right before $t$, we include $A(t − 1)$, the TB
+status one day before $t$ in the above equation. We can fit the model using:
+```{r}
+library(nlme)
+cd4.lme <- lme(cd4.sqrt ~ fuptime + tb.lag, random = ~ fuptime | id, data = merged_df)
+summary(cd4.lme)
+```
+We will construct a new dataframe startstop, which will be used to estimate inverse probability weights and to fit an MSM, to quantify the causal effect of TB on mortality. Let
+$\bm{T}_{TB}$ be all time points at which the TB-status switches, in any individual. Let $T$ end be all individual end times. Then, to (1) be able to compute inverse probability weights using a Cox proportional hazards model and (2) be able to fit the MSM, the dataframe
+startstop should contain, for each individual, rows corresponding to both $\bm{T}_{TB}$ and $\bm{T}_{end}$.
+For each individual we include these time points only up to his or her individual end time. We
+also sort the time points chronologically within each individual. The dataframe construction
+is done as follows:
+
+```{r}
+times <- sort(unique(c(tfdata_df$Ttb, tfdata_df$Tend)))
+times[1:20]
+```
+
+```{r}
+startstop_df <- data.frame(id = rep(tfdata_df$id, each = length(times)), 
+                        fuptime = rep(times, nrow(tfdata_df)))
+startstop_df[1:20,]
+```
+```{r}
+startstop_df <- merge(startstop_df, tfdata_df, by = "id", all.x = TRUE)
+startstop_df[1:20,]
+```
+```{r}
+startstop_df <- startstop_df[with(startstop_df, fuptime <= Tend), ]
+startstop_df[1:20,]
+```
+We compute the starting time for each interval of follow-up using tstartfun:
+```{r}
+tstartfun <- function(df) {
+  tstart_list <- lapply(split(df, df$id), function(subdf) {
+    keep <- rep(TRUE, nrow(subdf))
+    if(nrow(subdf) > 1) {
+      for(i in 2:nrow(subdf)) {
+        if(subdf$fuptime[i] <= subdf$fuptime[i - 1]) {
+          keep[i] <- FALSE
+        }
+      }
+    }
+    subdf <- subdf[keep, ]
+    tstart <- c(0, head(subdf$fuptime, -1))
+    return(tstart)
+  })
+  return(unlist(tstart_list))
+}
+
+```
+
+
+
+
+```{r}
+startstop_df$tstart=tstartfun(startstop_df)
+startstop_df[1:20,]
+
+```
+
+Then we compute tb, the TB status at each time point for each individual, and tb.lag, the
+time-varying TB status one day before each time point for each individual. We also compute
+event, an indicator for death, and impute time-varying CD4 count cd4.sqrt, using the LME model:
+
+```{r}
+startstop_df$tb <- ifelse(with(startstop_df, !is.na(Ttb) & fuptime >= Ttb), 1, 0)
+startstop_df$tb.lag <- ifelse(with(startstop_df, !is.na(Ttb) & fuptime > Ttb), 1, 0)
+startstop_df$event <- ifelse(with(startstop_df, !is.na(Tdeath) & fuptime >= Tdeath), 1, 0)
+startstop_df$cd4.sqrt <- predict(cd4.lme, 
+                              newdata = data.frame(id = startstop_df$id,
+                                                   fuptime = startstop_df$fuptime, 
+                                                   tb.lag = startstop_df$tb.lag))
+startstop_df[1:20,]
+```
+
+```{r}
+startstop_df[1:20,]
+```
+Note that for each row in startstop, cd4.sqrt contains imputed CD4 count that predicts
+tb in the same row. To correct for confounding by time-varying CD4 count, we can estimate
+the stabilized inverse probability weights:
+$$w_{it}$$
+

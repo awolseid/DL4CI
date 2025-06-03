@@ -1,5 +1,7 @@
 import pandas as pd
 
+from sklearn.metrics import accuracy_score
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -131,222 +133,229 @@ class GetDenomModelPredictions:
     self.pred_labels = (self.pred_probs >= 0.5).astype(int)
 
     flat_true_labels = torch.cat(all_true_labels).int().numpy()
-
-    return accuracy_score(flat_true_labels, self.pred_labels)
-
+    print(f"Denom Model Test accuracy: {accuracy_score(flat_true_labels, self.pred_labels)}.")
 
 
 
 
 
+
+
+
+
+# def train_numer_model(model         : nn.Module,
+#                     train_dataset : pd.DataFrame,
+#                     val_dataset   : pd.DataFrame = None, 
+#                     batch_size    : int          = 32, 
+#                     epochs        : int          = 50, 
+#                     lr            : float        = 0.001):
+  
+#   train_loader = DataLoader(dataset    = train_dataset, 
+#                             batch_size = batch_size, 
+#                             shuffle    = True)
+#   if val_dataset is not None:
+#      val_loader = DataLoader(dataset    = val_dataset, 
+#                              batch_size = batch_size)
+#   else:
+#      val_loader = None
+    
+#   device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#   model = model.to(device)
+#   optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+#   criterion = nn.BCELoss()
+
+#   summaries = {"train_losses": [], "val_losses": [], "train_accuracies": [], "val_accuracies": []}
+
+#   for epoch in range(epochs):
+#       model.train()
+#       train_loss = 0.0
+#       correct, total = 0, 0
+
+#       for X, y in train_loader:
+#           X, y = X.to(device), y.to(device)
+#           optimizer.zero_grad()
+#           y_pred = model(X)
+#           loss   = criterion(y_pred, y)
+#           loss.backward()
+#           optimizer.step()
+
+#           train_loss += loss.item()
+#           preds       = (y_pred >= 0.5).float()
+#           correct    += (preds == y).sum().item()
+#           total      += y.size(0)
+
+#       avg_train_loss = train_loss / len(train_loader)
+#       train_accuracy = correct / total
+#       summaries["train_losses"].append(avg_train_loss)
+#       summaries["train_accuracies"].append(train_accuracy)
+
+#       if val_loader:
+#           model.eval()
+#           val_loss = 0.0
+#           correct, total = 0, 0
+
+#           with torch.no_grad():
+#               for X, y in val_loader:
+#                   X, y     = X.to(device), y.to(device)
+#                   y_pred   = model(X)
+#                   loss     = criterion(y_pred, y.view(-1, 1))
+
+#                   val_loss += loss.item()
+#                   preds     = (y_pred >= 0.5).float()
+#                   correct  += (preds == y).sum().item()
+#                   total    += y.size(0)
+
+#           avg_val_loss = val_loss / len(val_loader)
+#           val_accuracy = correct / total
+#           summaries["val_losses"].append(avg_val_loss)
+#           summaries["val_accuracies"].append(val_accuracy)
+
+#           if (epoch + 1) % 5 == 0 or (epoch + 1) == 1 or (epoch + 1) == epochs:
+#               print(f"Epoch {epoch+1}: "
+#                     f"Train Loss = {avg_train_loss:.4f}, "
+#                     f"Val Loss   = {avg_val_loss:.4f} | "
+#                     f"Train Acc  = {train_accuracy:.4f}, "
+#                     f"Val Acc    = {val_accuracy:.4f}")
+#       else:
+#           if (epoch + 1) % 10 == 0 or (epoch + 1) == 1 or (epoch + 1) == epochs:
+#               print(f"Epoch {epoch+1}: "
+#                     f"Train Loss = {avg_train_loss:.4f}, "
+#                     f"Train Acc  = {train_accuracy:.4f}")
+
+#   return summaries
 
 
 def train_numer_model(model         : nn.Module,
-                    train_dataset : pd.DataFrame,
-                    val_dataset   : pd.DataFrame = None, 
-                    batch_size    : int          = 32, 
-                    epochs        : int          = 50, 
-                    lr            : float        = 0.001):
+                      train_dataset : pd.DataFrame,
+                      batch_size    : int, 
+                      epochs        : int, 
+                      lr            : float,
+                      val_dataset   : pd.DataFrame = None
+                     ):
   
-  train_loader = DataLoader(dataset    = train_dataset, 
-                            batch_size = batch_size, 
-                            shuffle    = True)
-  if val_dataset is not None:
-     val_loader = DataLoader(dataset    = val_dataset, 
-                             batch_size = batch_size)
-  else:
-     val_loader = None
-    
-  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  model = model.to(device)
-  optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-  criterion = nn.BCELoss()
+    train_loader = DataLoader(dataset    = train_dataset, 
+                              batch_size = batch_size, 
+                              shuffle    = True)
+    if val_dataset is not None:
+        val_loader = DataLoader(dataset    = val_dataset, 
+                                batch_size = batch_size)
+    else:
+        val_loader = None
+        
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.BCEWithLogitsLoss()
 
-  summaries = {"train_losses": [], "val_losses": [], "train_accuracies": [], "val_accuracies": []}
+    summaries = {"train_losses": [], "val_losses": [], "train_accuracies": [], "val_accuracies": []}
 
-  for epoch in range(epochs):
-      model.train()
-      train_loss = 0.0
-      correct, total = 0, 0
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0.0
+        correct, total = 0, 0
 
-      for X, y in train_loader:
-          X, y = X.to(device), y.to(device)
-          optimizer.zero_grad()
-          y_pred = model(X)
-          loss   = criterion(y_pred, y)
-          loss.backward()
-          optimizer.step()
+        for X, y in train_loader:
+            X, y = X.to(device), y.to(device)
+            optimizer.zero_grad()
+            y_pred = model(X)
+            loss   = criterion(y_pred, y.view(-1,1))
+            loss.backward()
+            optimizer.step()
 
-          train_loss += loss.item()
-          preds       = (y_pred >= 0.5).float()
-          correct    += (preds == y).sum().item()
-          total      += y.size(0)
+            train_loss += loss.item()
+            preds = (torch.sigmoid(y_pred) >= 0.5).float()
+            y = y.view_as(preds)
+            correct += (preds == y).sum().item()
+            total += y.size(0)
 
-      avg_train_loss = train_loss / len(train_loader)
-      train_accuracy = correct / total
-      summaries["train_losses"].append(avg_train_loss)
-      summaries["train_accuracies"].append(train_accuracy)
+        avg_train_loss = train_loss / len(train_loader)
+        train_accuracy = correct / total
 
-      if val_loader:
-          model.eval()
-          val_loss = 0.0
-          correct, total = 0, 0
+        summaries["train_losses"].append(avg_train_loss)
+        summaries["train_accuracies"].append(train_accuracy)
 
-          with torch.no_grad():
-              for X, y in val_loader:
-                  X, y     = X.to(device), y.to(device)
-                  y_pred   = model(X)
-                  loss     = criterion(y_pred, y.view(-1, 1))
+        if val_loader:
+            model.eval()
+            val_loss = 0.0
+            correct, total = 0, 0
 
-                  val_loss += loss.item()
-                  preds     = (y_pred >= 0.5).float()
-                  correct  += (preds == y).sum().item()
-                  total    += y.size(0)
+            with torch.no_grad():
+                for X, y in val_loader:
+                    X, y = X.to(device), y.to(device)
+                    y_pred = model(X)
+                    loss = criterion(y_pred, y.view(-1, 1))
 
-          avg_val_loss = val_loss / len(val_loader)
-          val_accuracy = correct / total
-          summaries["val_losses"].append(avg_val_loss)
-          summaries["val_accuracies"].append(val_accuracy)
+                    val_loss += loss.item()
+                    preds = (torch.sigmoid(y_pred) >= 0.5).float()
+                    y = y.view_as(preds)
+                    correct += (preds == y).sum().item()
+                    total += y.size(0)
 
-          if (epoch + 1) % 5 == 0 or (epoch + 1) == 1 or (epoch + 1) == epochs:
-              print(f"Epoch {epoch+1}: "
-                    f"Train Loss = {avg_train_loss:.4f}, "
-                    f"Val Loss   = {avg_val_loss:.4f} | "
-                    f"Train Acc  = {train_accuracy:.4f}, "
-                    f"Val Acc    = {val_accuracy:.4f}")
-      else:
-          if (epoch + 1) % 10 == 0 or (epoch + 1) == 1 or (epoch + 1) == epochs:
-              print(f"Epoch {epoch+1}: "
-                    f"Train Loss = {avg_train_loss:.4f}, "
-                    f"Train Acc  = {train_accuracy:.4f}")
+            avg_val_loss = val_loss / len(val_loader)
+            val_accuracy = correct / total
 
-  return summaries
+            summaries["val_losses"].append(avg_val_loss)
+            summaries["val_accuracies"].append(val_accuracy)
 
+            if (epoch + 1) % 5 == 0 or (epoch + 1) == 1 or (epoch + 1) == epochs:
+                print(f"Epoch {epoch+1}: "
+                      f"Train Loss = {avg_train_loss:.4f}, "
+                      f"Val Loss   = {avg_val_loss:.4f} | "
+                      f"Train Acc  = {train_accuracy:.4f}, "
+                      f"Val Acc    = {val_accuracy:.4f}")
+        else:
+            if (epoch + 1) % 10 == 0 or (epoch + 1) == 1 or (epoch + 1) == epochs:
+                print(f"Epoch {epoch+1}: "
+                      f"Train Loss = {avg_train_loss:.4f}, "
+                      f"Train Acc  = {train_accuracy:.4f}")
 
+    return summaries
 
-def train_numer_model(model         : nn.Module,
-                    train_dataset : pd.DataFrame,
-                    val_dataset   : pd.DataFrame = None, 
-                    batch_size    : int          = 32, 
-                    epochs        : int          = 50, 
-                    lr            : float        = 0.001):
-  
-  train_loader = DataLoader(dataset    = train_dataset, 
-                            batch_size = batch_size, 
-                            shuffle    = True)
-  if val_dataset is not None:
-     val_loader = DataLoader(dataset    = val_dataset, 
-                             batch_size = batch_size)
-  else:
-     val_loader = None
-    
-  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  model = model.to(device)
-  optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-  criterion = nn.BCELoss()
-
-  summaries = {"train_losses": [], "val_losses": [], "train_accuracies": [], "val_accuracies": []}
-
-  for epoch in range(epochs):
-      model.train()
-      train_loss = 0.0
-      correct, total = 0, 0
-
-      for X, y in train_loader:
-          X, y = X.to(device), y.to(device)
-          optimizer.zero_grad()
-          y_pred = model(X)
-          loss   = criterion(y_pred, y)
-          loss.backward()
-          optimizer.step()
-
-          train_loss += loss.item()
-          preds       = (y_pred >= 0.5).float()
-          correct    += (preds == y).sum().item()
-          total      += y.size(0)
-
-      avg_train_loss = train_loss / len(train_loader)
-      train_accuracy = correct / total
-      summaries["train_losses"].append(avg_train_loss)
-      summaries["train_accuracies"].append(train_accuracy)
-
-      if val_loader:
-          model.eval()
-          val_loss = 0.0
-          correct, total = 0, 0
-
-          with torch.no_grad():
-              for X, y in val_loader:
-                  X, y     = X.to(device), y.to(device)
-                  y_pred   = model(X)
-                  loss     = criterion(y_pred, y.view(-1, 1))
-
-                  val_loss += loss.item()
-                  preds     = (y_pred >= 0.5).float()
-                  correct  += (preds == y).sum().item()
-                  total    += y.size(0)
-
-          avg_val_loss = val_loss / len(val_loader)
-          val_accuracy = correct / total
-          summaries["val_losses"].append(avg_val_loss)
-          summaries["val_accuracies"].append(val_accuracy)
-
-          if (epoch + 1) % 5 == 0 or (epoch + 1) == 1 or (epoch + 1) == epochs:
-              print(f"Epoch {epoch+1}: "
-                    f"Train Loss = {avg_train_loss:.4f}, "
-                    f"Val Loss   = {avg_val_loss:.4f} | "
-                    f"Train Acc  = {train_accuracy:.4f}, "
-                    f"Val Acc    = {val_accuracy:.4f}")
-      else:
-          if (epoch + 1) % 10 == 0 or (epoch + 1) == 1 or (epoch + 1) == epochs:
-              print(f"Epoch {epoch+1}: "
-                    f"Train Loss = {avg_train_loss:.4f}, "
-                    f"Train Acc  = {train_accuracy:.4f}")
-
-  return summaries
 
 def test_numer_model(model, test_loader):
-  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-  model  = model.to(device)
-  model.eval()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model  = model.to(device)
+    model.eval()
 
-  criterion  = torch.nn.BCELoss()
+    criterion  = nn.BCEWithLogitsLoss()
     
-  total_loss = 0.0
-  correct    = 0
-  total      = 0
+    total_loss = 0.0
+    correct    = 0
+    total      = 0
 
-  all_probs  = []
-  all_preds  = []
-  all_labels = []
+    all_probs  = []
+    all_preds  = []
+    all_labels = []
 
-  with torch.no_grad():
-      for X, y in test_loader:
-          X, y = X.to(device), y.to(device)
+    with torch.no_grad():
+        for X, y in test_loader:
+            X, y = X.to(device), y.to(device)
 
-          y_pred = model(X)
-          loss   = criterion(y_pred, y)
-          
-          total_loss += loss.item()
+            y_pred = model(X)
+            loss   = criterion(y_pred, y.view(-1, 1))
+            
+            total_loss += loss.item()
 
-          y_prob  = y_pred
-          y_label = (y_prob >= 0.5).float()
+            y_prob  = torch.sigmoid(y_pred)
+            y_label = (y_prob >= 0.5).float()
+            y = y.view_as(y_label)
 
-          correct += (y_label == y).sum().item()
-          total   += y.size(0)
+            correct += (y_label == y).sum().item()
+            total   += y.size(0)
 
-          all_probs.append(y_prob.view(-1).cpu())
-          all_preds.append(y_label.view(-1).cpu())
-          all_labels.append(y.view(-1).cpu())
+            all_probs.append(y_prob.view(-1).cpu())
+            all_preds.append(y_label.view(-1).cpu())
+            all_labels.append(y.view(-1).cpu())
 
-  avg_loss = total_loss / len(test_loader)
-  accuracy = correct / total
+    avg_loss = total_loss / len(test_loader)
+    accuracy = correct / total
 
-  y_probs = torch.cat(all_probs).numpy().flatten()
-  y_preds = torch.cat(all_preds).numpy().flatten()
-  y_true  = torch.cat(all_labels).numpy().flatten()
+    y_probs = torch.cat(all_probs).numpy().flatten()
+    y_preds = torch.cat(all_preds).numpy().flatten()
+    y_true  = torch.cat(all_labels).numpy().flatten()
 
-  print(f"Test Loss: {avg_loss:.4f}")
-  print(f"Test Accuracy: {accuracy:.4f}")
+    print(f"Numer Model Test Accuracy: {accuracy:.4f}")
 
-  return y_probs, y_preds, y_true
+    return y_probs, y_preds, y_true
+
+

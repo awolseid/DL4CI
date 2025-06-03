@@ -350,6 +350,7 @@ def prepare_denom_model_data(df              : pd.DataFrame,
 
 def extract_baseline_vars(df        : pd.DataFrame,
                           obs_id    : str,
+                          obs_time  : str,
                           outcome   : str,
                           qual_covs : list[str]     = None,
                           quan_covs : list[str]     = None

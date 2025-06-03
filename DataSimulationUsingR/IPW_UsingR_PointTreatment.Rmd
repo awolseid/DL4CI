@@ -1,0 +1,86 @@
+---
+title: "IPW4CausalInference"
+author: "Awol Seid"
+date: "2025-02-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Point treatment example
+
+A point treatment data with measurements made in 1000 individuals on a continuous confounder $L$, a dichotomous exposure $A$ and a continuous outcome $Y$ , using
+
+  - $L\sim N(10,5)$
+  - $\log\left(\frac{P[A=1]}{1-P[A=1]}\right)=-10+L$
+  - $Y = 10A+0.5L+N(-10,5)$
+
+The true parameter for the marginal causal effect of $A$ on $Y$ is 10. 
+```{r}
+library(ipw)
+
+set.seed(16)
+
+n <- 1000
+n
+simdat <- data.frame(l = rnorm(n, 10, 5))
+simdat[1:10,]
+```
+```{r}
+a.lin <- simdat$l - 10
+a.lin[1:10]
+```
+```{r}
+pa <- exp(a.lin)/(1 + exp(a.lin))
+pa[1:10]
+```
+```{r}
+simdat$a <- rbinom(n, 1, prob = pa)
+simdat$a[1:10]
+```
+
+
+
+```{r}
+simdat$y <- 10*simdat$a + 0.5*simdat$l + rnorm(n, -10, 5)
+simdat[1:10,]
+```
+```{r}
+summary(lm(simdat$y~simdat$a+simdat$l))
+```
+We can estimate inverse probability weights to correct for the confounding.
+
+$$w_i=\frac{P(A_i=a_i)}{P(A_i=a_i|L_i=l_i)}$$
+```{r}
+model_A = glm(a~1, family="binomial", data=simdat)
+summary(model_A)
+pred_prob_A = model_A$fitted.values
+pred_prob_A[1:10]
+prob_A <- ifelse(simdat$a == 1, pred_prob_A, 1 - pred_prob_A)
+prob_A[1:10]
+```
+
+```{r}
+model_AgL = glm(a~l, family="binomial", data=simdat)
+summary(model_AgL)
+pred_prob_AgL = model_AgL$fitted.values
+pred_prob_AgL[1:10]
+prob_AgL <- ifelse(simdat$a == 1, pred_prob_AgL, 1 - pred_prob_AgL)
+prob_AgL[1:10]
+```
+```{r}
+wi = prob_A/prob_AgL
+summary(wi)
+```
+Weighting the original observations by the stabilized weights $wi$ to adjust for confounding,
+we can fit the MSM, estimating the marginal causal effect of $A$ on $Y$ ,
+$$Y=\alpha+\beta A$$
+
+```{r}
+library(survey)
+msm <- (svyglm(y ~ a, design = svydesign(~ 1, weights = ~ wi, data = simdat)))
+summary(msm)
+confint(msm)
+```

@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import random
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -37,3 +38,14 @@ def collate_fn(batch):
     padded_labels = pad_sequence(labels, batch_first=True, padding_value=-1.0)
 
     return static, padded_longit, padded_labels
+
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)            # for single GPU
+    torch.cuda.manual_seed_all(seed)        # for multi-GPU
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False

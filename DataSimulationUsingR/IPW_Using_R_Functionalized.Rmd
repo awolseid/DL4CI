@@ -1,0 +1,936 @@
+---
+title: "IPW4CausalInference"
+author: "Awol Seid"
+date: "2025-02-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Causal effect of HAART use on mortality in HIV-infected patients
+
+Survival data measured in 1200 HIV-infected patients. Start of follow-up is HIV seroconversion. Each row corresponds to a 100 day period of follow-up time. Patients can initiate highly active anti-retroviral therapy (HAART) during follow-up. We will estimate the causal effect of HAART on mortality using this dataset, while adjusting both for possible confounding by CD4 count, and for informative censoring due to the effect of CD4 count on dropout, using IPW. In this example, CD4 count is a time-varying covariate.
+```{r}
+library(ipw)
+library(survival)
+```
+## HAART Dataset
+```{r}
+data("haartdat")
+data_df = haartdat
+data_df[1:50,]
+data_df <- data_df[order(order(data_df$patient, data_df$fuptime)),]
+data_df[1:50,]
+```
+
+## Treatment weights
+
+```{r}
+ipw_denom=function(data_df){
+id=data_df$patient
+id[1:15]
+tstart=data_df$tstart
+tstart[1:15]
+obs_time=data_df$fuptime
+obs_time[1:15]
+exposure=data_df$haartind
+exposure[1:15]
+
+tempdat_df <- data.frame(id=id, obs_time=obs_time, exposure = exposure)
+tempdat_df[1:15,]
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:15,]
+tempdat_df$selvar <- unlist(lapply(split(tempdat_df$exposure, tempdat_df$id), 
+                                function(x) {
+                                  if (!is.na(match(1, x))) {
+                                    return(c(rep(1, match(1, x)), 
+                                             rep(0, length(x) - match(1, x))))
+                                    }
+                                  else {return(rep(1, length(x)))}
+                                  }
+                                )
+                         )
+
+tempdat_df[1:20,]
+
+model <- coxph(Surv(tstart, obs_time, exposure)~sex+age+cd4.sqrt,
+               data = data_df, subset = tempdat_df$selvar == 1)
+summary(model)
+
+cum_bh_df <- basehaz(model, centered = TRUE)
+cum_bh_df
+cum_bh_df <- data.frame(obs_time=cum_bh_df$time, cum_bh=cum_bh_df$hazard)
+cum_bh_df
+bh_df=cum_bh_df
+bh_df$bh[1] <- bh_df$cum_bh[1]
+bh_df$bh[1]
+bh_df
+bh_df$bh[2:nrow(bh_df)] <- diff(bh_df$cum_bh, 1)
+bh_df
+bh_df$cum_bh <- NULL
+bh_df
+obs_time_df <- data.frame(obs_time = sort(unique(tempdat_df$obs_time)))
+obs_time_df
+temp_df <- merge(obs_time_df, data.frame(obs_time = cum_bh_df$obs_time, 
+                                         bh_cum = cum_bh_df$cum_bh), 
+                 by = "obs_time", all.x = TRUE)
+temp_df[1:10,]
+rm(cum_bh_df)
+if (is.na(temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat_df$obs_time))])) 
+    temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat$obs_time))] <- 0
+
+temp_df$bh_cum <- approx(x = temp_df$obs_time, y = temp_df$bh_cum, 
+                         xout = temp_df$obs_time, method = "constant", 
+                         rule =2)$y
+temp_df[1:10,]
+temp_df$bh[1] <- temp_df$bh_cum[1]
+temp_df$bh[1]
+temp_df$bh[2:nrow(temp_df)] <- diff(temp_df$bh_cum, 1)
+temp_df[1:10,]
+temp_df$bh_cum <- NULL
+temp_df[1:10,]
+tempdat_df <- merge(tempdat_df, temp_df, by = "obs_time", all.x = TRUE)
+tempdat_df[1:10,]
+rm(temp_df)
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:10,]
+tempdat_df <- tempdat_df[, c("id", setdiff(names(tempdat_df), "id"))]
+tempdat_df[1:10,]
+tempdat_df$risk[tempdat_df$selvar == 1] <- predict(model, type = "risk", centered = TRUE)
+tempdat_df[1:10,]
+print(names(tempdat_df))
+tempdat_df$hazard[tempdat_df$selvar == 1] <- with(tempdat_df[tempdat_df$selvar == 1, ], bh * risk)
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 0)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 0),
+    ], exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 1)
+  ] <- 1 - with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 1), ],
+    exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[tempdat_df$selvar == 0] <- 1
+tempdat_df[1:20, ]
+tempdat_df$cum_prod_prob <- unsplit(lapply(split(tempdat_df$h_prob, 
+                                                 tempdat_df$id), function(x) 
+                                                   cumprod(x)), tempdat_df$id)
+tempdat_df[1:20,]
+  return(tempdat_df)
+}
+```
+```{r}
+denom_ipw_df=ipw_denom(data_df)
+denom_ipw_df
+```
+```{r}
+prob_cum_denom=denom_ipw_df$cum_prod_prob
+unstablized_treat_weights=1/prob_cum_denom
+summary(unstablized_treat_weights)
+```
+```{r}
+ipw_numer=function(data_df){
+id=data_df$patient
+id[1:15]
+tstart=data_df$tstart
+tstart[1:15]
+obs_time=data_df$fuptime
+obs_time[1:15]
+exposure=data_df$haartind
+exposure[1:15]
+
+tempdat_df <- data.frame(id=id, obs_time=obs_time, exposure = exposure)
+tempdat_df[1:15,]
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:15,]
+tempdat_df$selvar <- unlist(lapply(split(tempdat_df$exposure, tempdat_df$id), 
+                                function(x) {
+                                  if (!is.na(match(1, x))) {
+                                    return(c(rep(1, match(1, x)), 
+                                             rep(0, length(x) - match(1, x))))
+                                    }
+                                  else {return(rep(1, length(x)))}
+                                  }
+                                )
+                         )
+
+tempdat_df[1:20,]
+
+model <- coxph(Surv(tstart, obs_time, exposure)~sex+age,
+               data = data_df, subset = tempdat_df$selvar == 1)
+summary(model)
+
+cum_bh_df <- basehaz(model, centered = TRUE)
+cum_bh_df
+cum_bh_df <- data.frame(obs_time=cum_bh_df$time, cum_bh=cum_bh_df$hazard)
+cum_bh_df
+bh_df=cum_bh_df
+bh_df$bh[1] <- bh_df$cum_bh[1]
+bh_df$bh[1]
+bh_df
+bh_df$bh[2:nrow(bh_df)] <- diff(bh_df$cum_bh, 1)
+bh_df
+bh_df$cum_bh <- NULL
+bh_df
+obs_time_df <- data.frame(obs_time = sort(unique(tempdat_df$obs_time)))
+obs_time_df
+temp_df <- merge(obs_time_df, data.frame(obs_time = cum_bh_df$obs_time, 
+                                         bh_cum = cum_bh_df$cum_bh), 
+                 by = "obs_time", all.x = TRUE)
+temp_df[1:10,]
+rm(cum_bh_df)
+if (is.na(temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat_df$obs_time))])) 
+    temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat$obs_time))] <- 0
+
+temp_df$bh_cum <- approx(x = temp_df$obs_time, y = temp_df$bh_cum, 
+                         xout = temp_df$obs_time, method = "constant", 
+                         rule =2)$y
+temp_df[1:10,]
+temp_df$bh[1] <- temp_df$bh_cum[1]
+temp_df$bh[1]
+temp_df$bh[2:nrow(temp_df)] <- diff(temp_df$bh_cum, 1)
+temp_df[1:10,]
+temp_df$bh_cum <- NULL
+temp_df[1:10,]
+tempdat_df <- merge(tempdat_df, temp_df, by = "obs_time", all.x = TRUE)
+tempdat_df[1:10,]
+rm(temp_df)
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:10,]
+tempdat_df <- tempdat_df[, c("id", setdiff(names(tempdat_df), "id"))]
+tempdat_df[1:10,]
+tempdat_df$risk[tempdat_df$selvar == 1] <- predict(model, type = "risk", centered = TRUE)
+tempdat_df[1:10,]
+print(names(tempdat_df))
+tempdat_df$hazard[tempdat_df$selvar == 1] <- with(tempdat_df[tempdat_df$selvar == 1, ], bh * risk)
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 0)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 0),
+    ], exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 1)
+  ] <- 1 - with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 1), ],
+    exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[tempdat_df$selvar == 0] <- 1
+tempdat_df[1:20, ]
+tempdat_df$cum_prod_prob <- unsplit(lapply(split(tempdat_df$h_prob, 
+                                                 tempdat_df$id), function(x) 
+                                                   cumprod(x)), tempdat_df$id)
+tempdat_df[1:20,]
+  return(tempdat_df)
+}
+```
+```{r}
+numer_ipw_df=ipw_numer(data_df)
+numer_ipw_df
+```
+
+```{r}
+prob_cum_numer=numer_ipw_df$cum_prod_prob
+summary(prob_cum_numer)
+```
+
+
+```{r}
+stablized_treat_weights=prob_cum_numer/prob_cum_denom
+summary(stablized_treat_weights)
+```
+## Censoring Weights
+
+```{r}
+ipw_censor_denom=function(data_df){
+id=data_df$patient
+id[1:15]
+tstart=data_df$tstart
+tstart[1:15]
+obs_time=data_df$fuptime
+obs_time[1:15]
+exposure=data_df$dropout
+exposure[1:15]
+
+tempdat_df <- data.frame(id=id, obs_time=obs_time, exposure = exposure)
+tempdat_df[1:15,]
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:15,]
+tempdat_df$selvar <- unlist(lapply(split(tempdat_df$exposure, tempdat_df$id), 
+                                function(x) {
+                                  if (!is.na(match(1, x))) {
+                                    return(c(rep(1, match(1, x)), 
+                                             rep(0, length(x) - match(1, x))))
+                                    }
+                                  else {return(rep(1, length(x)))}
+                                  }
+                                )
+                         )
+
+tempdat_df[1:20,]
+
+model <- coxph(Surv(tstart, obs_time, exposure)~sex+age+cd4.sqrt,
+               data = data_df, subset = tempdat_df$selvar == 1)
+summary(model)
+
+cum_bh_df <- basehaz(model, centered = TRUE)
+cum_bh_df
+cum_bh_df <- data.frame(obs_time=cum_bh_df$time, cum_bh=cum_bh_df$hazard)
+cum_bh_df
+bh_df=cum_bh_df
+bh_df$bh[1] <- bh_df$cum_bh[1]
+bh_df$bh[1]
+bh_df
+bh_df$bh[2:nrow(bh_df)] <- diff(bh_df$cum_bh, 1)
+bh_df
+bh_df$cum_bh <- NULL
+bh_df
+obs_time_df <- data.frame(obs_time = sort(unique(tempdat_df$obs_time)))
+obs_time_df
+temp_df <- merge(obs_time_df, data.frame(obs_time = cum_bh_df$obs_time, 
+                                         bh_cum = cum_bh_df$cum_bh), 
+                 by = "obs_time", all.x = TRUE)
+temp_df[1:10,]
+rm(cum_bh_df)
+if (is.na(temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat_df$obs_time))])) 
+    temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat$obs_time))] <- 0
+
+temp_df$bh_cum <- approx(x = temp_df$obs_time, y = temp_df$bh_cum, 
+                         xout = temp_df$obs_time, method = "constant", 
+                         rule =2)$y
+temp_df[1:10,]
+temp_df$bh[1] <- temp_df$bh_cum[1]
+temp_df$bh[1]
+temp_df$bh[2:nrow(temp_df)] <- diff(temp_df$bh_cum, 1)
+temp_df[1:10,]
+temp_df$bh_cum <- NULL
+temp_df[1:10,]
+tempdat_df <- merge(tempdat_df, temp_df, by = "obs_time", all.x = TRUE)
+tempdat_df[1:10,]
+rm(temp_df)
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:10,]
+tempdat_df <- tempdat_df[, c("id", setdiff(names(tempdat_df), "id"))]
+tempdat_df[1:10,]
+tempdat_df$risk[tempdat_df$selvar == 1] <- predict(model, type = "risk", centered = TRUE)
+tempdat_df[1:10,]
+print(names(tempdat_df))
+tempdat_df$hazard[tempdat_df$selvar == 1] <- with(tempdat_df[tempdat_df$selvar == 1, ], bh * risk)
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 0)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 0),
+    ], exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 1)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 1), ],
+    exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[tempdat_df$selvar == 0] <- 1
+tempdat_df[1:20, ]
+tempdat_df$cum_prod_prob <- unsplit(lapply(split(tempdat_df$h_prob, 
+                                                 tempdat_df$id), function(x) 
+                                                   cumprod(x)), tempdat_df$id)
+tempdat_df[1:20,]
+  return(tempdat_df)
+}
+```
+```{r}
+denom_censor_prob=ipw_censor_denom(data_df)$cum_prod_prob
+unstablized_censor_weights=1/denom_censor_prob
+summary(unstablized_censor_weights)
+```
+
+```{r}
+ipw_censor_numer=function(data_df){
+id=data_df$patient
+id[1:15]
+tstart=data_df$tstart
+tstart[1:15]
+obs_time=data_df$fuptime
+obs_time[1:15]
+exposure=data_df$dropout
+exposure[1:15]
+
+tempdat_df <- data.frame(id=id, obs_time=obs_time, exposure = exposure)
+tempdat_df[1:15,]
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:15,]
+tempdat_df$selvar <- unlist(lapply(split(tempdat_df$exposure, tempdat_df$id), 
+                                function(x) {
+                                  if (!is.na(match(1, x))) {
+                                    return(c(rep(1, match(1, x)), 
+                                             rep(0, length(x) - match(1, x))))
+                                    }
+                                  else {return(rep(1, length(x)))}
+                                  }
+                                )
+                         )
+
+tempdat_df[1:20,]
+
+model <- coxph(Surv(tstart, obs_time, exposure)~sex+age,
+               data = data_df, subset = tempdat_df$selvar == 1)
+summary(model)
+
+cum_bh_df <- basehaz(model, centered = TRUE)
+cum_bh_df
+cum_bh_df <- data.frame(obs_time=cum_bh_df$time, cum_bh=cum_bh_df$hazard)
+cum_bh_df
+bh_df=cum_bh_df
+bh_df$bh[1] <- bh_df$cum_bh[1]
+bh_df$bh[1]
+bh_df
+bh_df$bh[2:nrow(bh_df)] <- diff(bh_df$cum_bh, 1)
+bh_df
+bh_df$cum_bh <- NULL
+bh_df
+obs_time_df <- data.frame(obs_time = sort(unique(tempdat_df$obs_time)))
+obs_time_df
+temp_df <- merge(obs_time_df, data.frame(obs_time = cum_bh_df$obs_time, 
+                                         bh_cum = cum_bh_df$cum_bh), 
+                 by = "obs_time", all.x = TRUE)
+temp_df[1:10,]
+rm(cum_bh_df)
+if (is.na(temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat_df$obs_time))])) 
+    temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat$obs_time))] <- 0
+
+temp_df$bh_cum <- approx(x = temp_df$obs_time, y = temp_df$bh_cum, 
+                         xout = temp_df$obs_time, method = "constant", 
+                         rule =2)$y
+temp_df[1:10,]
+temp_df$bh[1] <- temp_df$bh_cum[1]
+temp_df$bh[1]
+temp_df$bh[2:nrow(temp_df)] <- diff(temp_df$bh_cum, 1)
+temp_df[1:10,]
+temp_df$bh_cum <- NULL
+temp_df[1:10,]
+tempdat_df <- merge(tempdat_df, temp_df, by = "obs_time", all.x = TRUE)
+tempdat_df[1:10,]
+rm(temp_df)
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:10,]
+tempdat_df <- tempdat_df[, c("id", setdiff(names(tempdat_df), "id"))]
+tempdat_df[1:10,]
+tempdat_df$risk[tempdat_df$selvar == 1] <- predict(model, type = "risk", centered = TRUE)
+tempdat_df[1:10,]
+print(names(tempdat_df))
+tempdat_df$hazard[tempdat_df$selvar == 1] <- with(tempdat_df[tempdat_df$selvar == 1, ], bh * risk)
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 0)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 0),
+    ], exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 1)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 1), ],
+    exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[tempdat_df$selvar == 0] <- 1
+tempdat_df[1:20, ]
+tempdat_df$cum_prod_prob <- unsplit(lapply(split(tempdat_df$h_prob, 
+                                                 tempdat_df$id), function(x) 
+                                                   cumprod(x)), tempdat_df$id)
+tempdat_df[1:20,]
+  return(tempdat_df)
+}
+```
+```{r}
+numer_censor_prob=ipw_censor_numer(data_df)$cum_prod_prob
+summary(numer_censor_prob)
+```
+
+```{r}
+stablized_censor_weights=numer_censor_prob/denom_censor_prob
+summary(stablized_censor_weights)
+```
+
+## Stablized weights
+
+```{r}
+stablized_weights=stablized_treat_weights*stablized_censor_weights
+summary(stablized_weights)
+```
+
+
+## Models
+
+```{r}
+surv_model_unweighted <- coxph(Surv(tstart, fuptime, event)~haartind,
+                               data = data_df)
+summary(surv_model_unweighted)
+```
+```{r}
+surv_model_unstablized_treat <- coxph(Surv(tstart, fuptime, event)~haartind +
+                                        cluster(patient),
+                                      weights=unstablized_treat_weights,
+                                      data = data_df)
+summary(surv_model_unstablized_treat)
+```
+```{r}
+surv_model_stablized_treat <- coxph(Surv(tstart, fuptime, event)~haartind +
+                                        cluster(patient), 
+                                    weights=stablized_treat_weights, 
+                                    data = data_df)
+summary(surv_model_stablized_treat)
+```
+```{r}
+surv_model_unstablized_censor <- coxph(Surv(tstart, fuptime, event)~haartind +
+                                        cluster(patient), 
+                                      weights=unstablized_censor_weights, 
+                                      data = data_df)
+summary(surv_model_unstablized_censor)
+```
+```{r}
+surv_model_stablized_censor <- coxph(Surv(tstart, fuptime, event)~haartind +
+                                        cluster(patient), 
+                                      weights=stablized_censor_weights, 
+                                      data = data_df)
+summary(surv_model_stablized_censor)
+```
+
+
+```{r}
+surv_model_stablized_weights <- coxph(Surv(tstart, fuptime, event)~haartind +
+                                        cluster(patient), 
+                                      weights=stablized_weights, 
+                                      data = data_df)
+summary(surv_model_stablized_weights)
+```
+
+
+##########
+
+      tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 0)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 0),
+    ], exp(-1 * bh * risk))
+tempdat_df[1:20,]
+
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 1)
+  ] <- 1 - with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 1), ],
+    exp(-1 * bh * risk))
+tempdat_df[1:20,]
+        
+
+        if (type == "cens") {
+            tempdat$p.denominator[with(tempdat, selvar == 1 & 
+                exposure == 1)] <- with(tempdat[with(tempdat, 
+                selvar == 1 & exposure == 1), ], exp(-1 * bashaz.denominator * 
+                risk.denominator))
+        }
+        
+     
+############
+
+# Causal effect of tuberculosis on mortality in HIV-infected patients
+Our third example is similar to the previous example but with measurements made at
+irregular intervals of follow-up time. We estimate the causal effect of active tuberculosis (TB)
+on mortality in HIV-positive individuals, adjusted for possible confounding by time-varying
+CD4 count using IPW. We smooth time-varying CD4 using a random effects model, because
+it is the underlying "true" CD4, separate from short-term fluctuations and measurement error,
+that is a confounder for the effect of TB. The simulated datasets basdat and timedat are
+used in this example. \\
+
+Dataset basdat contains time-fixed variables, measured in 386 HIV-positive
+individuals: id is the patient ID, Ttb is the time of first active tuberculosis, measured in days since HIV seroconversion, 
+Tdeath is the time of death, measured in days since HIV seroconversion, 
+Tend is the individual end time (either death or censoring), measured in days since HIV
+seroconversion.
+
+######### Time-fixed data
+```{r}
+library("ipw")
+data("basdat")
+
+timefixed_df=basdat
+timefixed_df
+```
+
+Dataset timedat contains longitudinal measurements made in the same 386 HIV-positive
+individuals as basdat: id is the patient ID, fuptime is follow-up time, in days since HIV seroconversion,
+cd4count is CD4 count, measured at fuptime.
+
+```{r}
+data("timedat")
+longdata_df=timedat
+longdata_df[1:20,]
+```
+
+Note that these data were simulated by the authors using the algorithm described in Van der Wal, Prins,
+Lumbreras, and Geskus (2009) https://pubmed.ncbi.nlm.nih.gov/19499549/. Therefore, CD4 count at a certain time point is affected by
+the TB status right before that time point. TB status at a certain time point is affected by
+CD4 count at that specific time point.    
+
+Some processing of the original data is necessary. We check if there is more than one CD4
+measurement taken on the same day within each patient:
+```{r}
+table(duplicated(longdata_df[, c("id", "fuptime")]))
+```
+which is not the case. Because of skewness, we compute the square root of CD4 count:
+```{r}
+longdata_df$cd4.sqrt <- sqrt(longdata_df$cd4count)
+summary(longdata_df$cd4count)
+summary(longdata_df$cd4.sqrt)
+```
+Add the time of first active TB to timedat, and compute tb.lag, the time-varying TB status
+one day before the measurement time (which is necessary for reasons that are explained
+below):
+```{r}
+merged_df <- merge(longdata_df, timefixed_df[,c("id","Ttb")], by = "id", all.x = TRUE)
+merged_df[50:70,]
+```
+```{r}
+merged_df$tb.lag <- ifelse(with(merged_df, !is.na(Ttb) & fuptime > Ttb), 1, 0)
+merged_df
+```
+To be able to impute CD4 count at time points other than the measurement times, which is
+necessary when fitting the MSM (see below), and to smooth the original measurements, we
+fit the random effects model
+$$\sqrt{L_i(t)}=\alpha_{1i}+\alpha_{1i}t+\beta_2A_i(t-1)$$
+with $t$ follow-up time (days since HIV seroconversion), $L(t)$ CD4 count, and $A(t)$ time-varying
+TB status. Random effects $\alpha_{1i}$ and $\alpha_{2i}$ are assumed to be normally distributed with mean
+$\bm{\beta}'=(\beta_0,\beta_1)$) and covariance matrix $\Sigma$. The model includes a fixed effect for TB,
+$\beta_2$. Because CD4 is affected by the TB status right before $t$, we include $A(t − 1)$, the TB
+status one day before $t$ in the above equation. We can fit the model using:
+```{r}
+library(nlme)
+cd4.lme <- lme(cd4.sqrt ~ fuptime + tb.lag, random = ~ fuptime | id, data = merged_df)
+summary(cd4.lme)
+```
+We will construct a new dataframe startstop, which will be used to estimate inverse probability weights and to fit an MSM, to quantify the causal effect of TB on mortality. Let
+$\bm{T}_{TB}$ be all time points at which the TB-status switches, in any individual. Let $T$ end be all individual end times. Then, to (1) be able to compute inverse probability weights using a Cox proportional hazards model and (2) be able to fit the MSM, the dataframe
+startstop should contain, for each individual, rows corresponding to both $\bm{T}_{TB}$ and $\bm{T}_{end}$.
+For each individual we include these time points only up to his or her individual end time. We
+also sort the time points chronologically within each individual. The dataframe construction
+is done as follows:
+
+```{r}
+times <- sort(unique(c(timefixed_df$Ttb, timefixed_df$Tend)))
+times[1:20]
+```
+
+```{r}
+startstop_df <- data.frame(id = rep(timefixed_df$id, each = length(times)), 
+                        fuptime = rep(times, nrow(timefixed_df)))
+startstop_df[1:20,]
+```
+```{r}
+startstop_df <- merge(startstop_df, timefixed_df, by = "id", all.x = TRUE)
+startstop_df[1:20,]
+```
+```{r}
+startstop_df <- startstop_df[with(startstop_df, fuptime <= Tend), ]
+startstop_df[1:20,]
+```
+We compute the starting time for each interval of follow-up using tstartfun:
+```{r}
+tstartfun <- function(df) {
+  tstart_list <- lapply(split(df, df$id), function(subdf) {
+    keep <- rep(TRUE, nrow(subdf))
+    if(nrow(subdf) > 1) {
+      for(i in 2:nrow(subdf)) {
+        if(subdf$fuptime[i] <= subdf$fuptime[i - 1]) {
+          keep[i] <- FALSE
+        }
+      }
+    }
+    subdf <- subdf[keep, ]
+    tstart <- c(0, head(subdf$fuptime, -1))
+    return(tstart)
+  })
+  return(unlist(tstart_list))
+}
+
+```
+
+
+
+
+```{r}
+startstop_df$tstart=tstartfun(startstop_df)
+startstop_df[1:20,]
+
+```
+
+Then we compute tb, the TB status at each time point for each individual, and tb.lag, the
+time-varying TB status one day before each time point for each individual. We also compute
+event, an indicator for death, and impute time-varying CD4 count cd4.sqrt, using the LME model:
+
+```{r}
+startstop_df$tb <- ifelse(with(startstop_df, !is.na(Ttb) & fuptime >= Ttb), 1, 0)
+startstop_df$tb.lag <- ifelse(with(startstop_df, !is.na(Ttb) & fuptime > Ttb), 1, 0)
+startstop_df$event <- ifelse(with(startstop_df, !is.na(Tdeath) & fuptime >= Tdeath), 1, 0)
+startstop_df$cd4.sqrt <- predict(cd4.lme, 
+                              newdata = data.frame(id = startstop_df$id,
+                                                   fuptime = startstop_df$fuptime, 
+                                                   tb.lag = startstop_df$tb.lag))
+startstop_df[1:20,]
+```
+
+```{r}
+startstop_df[1:20,]
+```
+Note that for each row in startstop, cd4.sqrt contains imputed CD4 count that predicts
+tb in the same row. To correct for confounding by time-varying CD4 count, we can estimate
+the stabilized inverse probability weights:
+$$w_{it}$$
+```{r}
+startstop_df$tb <- ifelse(with(startstop_df, !is.na(Ttb) & fuptime >= Ttb), 1, 0)
+startstop_df$tb.lag <- ifelse(with(startstop_df, !is.na(Ttb) & fuptime > Ttb), 1, 0)
+startstop_df$event <- ifelse(with(startstop_df, !is.na(Tdeath) & fuptime >= Tdeath), 1, 0)
+startstop_df$cd4.sqrt <- predict(cd4.lme, 
+                                 newdata = data.frame(id = startstop_df$id, 
+                                                      fuptime = 
+                                                        startstop_df$fuptime, 
+                                                      tb.lag = startstop_df$tb.lag))
+```
+
+
+```{r}
+ipw_TBdenom=function(data_df){
+id=data_df$id
+id[1:15]
+tstart=data_df$tstart
+tstart[1:15]
+obs_time=data_df$fuptime
+obs_time[1:15]
+exposure=data_df$tb
+exposure[1:15]
+
+tempdat_df <- data.frame(id=id, obs_time=obs_time, exposure = exposure)
+tempdat_df[1:15,]
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:15,]
+tempdat_df$selvar <- unlist(lapply(split(tempdat_df$exposure, tempdat_df$id), 
+                                function(x) {
+                                  if (!is.na(match(1, x))) {
+                                    return(c(rep(1, match(1, x)), 
+                                             rep(0, length(x) - match(1, x))))
+                                    }
+                                  else {return(rep(1, length(x)))}
+                                  }
+                                )
+                         )
+
+tempdat_df[1:20,]
+print(tempdat_df$selvar)
+
+model <- coxph(Surv(tstart, obs_time, exposure)~cd4.sqrt,
+               data = data_df, subset = tempdat_df$selvar == 1)
+summary(model)
+
+cum_bh_df <- basehaz(model, centered = TRUE)
+cum_bh_df
+cum_bh_df <- data.frame(obs_time=cum_bh_df$time, cum_bh=cum_bh_df$hazard)
+cum_bh_df
+bh_df=cum_bh_df
+bh_df$bh[1] <- bh_df$cum_bh[1]
+bh_df$bh[1]
+bh_df
+bh_df$bh[2:nrow(bh_df)] <- diff(bh_df$cum_bh, 1)
+bh_df
+bh_df$cum_bh <- NULL
+bh_df
+obs_time_df <- data.frame(obs_time = sort(unique(tempdat_df$obs_time)))
+obs_time_df
+temp_df <- merge(obs_time_df, data.frame(obs_time = cum_bh_df$obs_time, 
+                                         bh_cum = cum_bh_df$cum_bh), 
+                 by = "obs_time", all.x = TRUE)
+temp_df[1:10,]
+rm(cum_bh_df)
+if (is.na(temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat_df$obs_time))])) 
+    temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat$obs_time))] <- 0
+
+temp_df$bh_cum <- approx(x = temp_df$obs_time, y = temp_df$bh_cum, 
+                         xout = temp_df$obs_time, method = "constant", 
+                         rule =2)$y
+temp_df[1:10,]
+temp_df$bh[1] <- temp_df$bh_cum[1]
+temp_df$bh[1]
+temp_df$bh[2:nrow(temp_df)] <- diff(temp_df$bh_cum, 1)
+temp_df[1:10,]
+temp_df$bh_cum <- NULL
+temp_df[1:10,]
+tempdat_df <- merge(tempdat_df, temp_df, by = "obs_time", all.x = TRUE)
+tempdat_df[1:10,]
+rm(temp_df)
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:10,]
+tempdat_df <- tempdat_df[, c("id", setdiff(names(tempdat_df), "id"))]
+tempdat_df[1:10,]
+tempdat_df$risk[tempdat_df$selvar == 1] <- predict(model, type = "risk", centered = TRUE)
+tempdat_df[1:10,]
+print(names(tempdat_df))
+tempdat_df$hazard[tempdat_df$selvar == 1] <- with(tempdat_df[tempdat_df$selvar == 1, ], bh * risk)
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 0)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 0),
+    ], exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 1)
+  ] <- 1 - with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 1), ],
+    exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[tempdat_df$selvar == 0] <- 1
+tempdat_df[1:20, ]
+tempdat_df$cum_prod_prob <- unsplit(lapply(split(tempdat_df$h_prob, 
+                                                 tempdat_df$id), function(x) 
+                                                   cumprod(x)), tempdat_df$id)
+tempdat_df[1:20,]
+  return(tempdat_df)
+}
+```
+```{r}
+denom_TBipw_df=ipw_TBdenom(startstop_df)
+denom_TBipw_df
+```
+
+```{r}
+ipw_TBnumer=function(data_df){
+id=data_df$id
+id[1:15]
+tstart=data_df$tstart
+tstart[1:15]
+obs_time=data_df$fuptime
+obs_time[1:15]
+exposure=data_df$tb
+exposure[1:15]
+
+tempdat_df <- data.frame(id=id, obs_time=obs_time, exposure = exposure)
+tempdat_df[1:15,]
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:15,]
+tempdat_df$selvar <- unlist(lapply(split(tempdat_df$exposure, tempdat_df$id), 
+                                function(x) {
+                                  if (!is.na(match(1, x))) {
+                                    return(c(rep(1, match(1, x)), 
+                                             rep(0, length(x) - match(1, x))))
+                                    }
+                                  else {return(rep(1, length(x)))}
+                                  }
+                                )
+                         )
+
+tempdat_df[1:20,]
+print(tempdat_df$selvar)
+
+model <- coxph(Surv(tstart, obs_time, exposure)~1,
+               data = data_df, subset = tempdat_df$selvar == 1)
+summary(model)
+
+cum_bh_df <- basehaz(model, centered = TRUE)
+cum_bh_df
+cum_bh_df <- data.frame(obs_time=cum_bh_df$time, cum_bh=cum_bh_df$hazard)
+cum_bh_df
+bh_df=cum_bh_df
+bh_df$bh[1] <- bh_df$cum_bh[1]
+bh_df$bh[1]
+bh_df
+bh_df$bh[2:nrow(bh_df)] <- diff(bh_df$cum_bh, 1)
+bh_df
+bh_df$cum_bh <- NULL
+bh_df
+obs_time_df <- data.frame(obs_time = sort(unique(tempdat_df$obs_time)))
+obs_time_df
+temp_df <- merge(obs_time_df, data.frame(obs_time = cum_bh_df$obs_time, 
+                                         bh_cum = cum_bh_df$cum_bh), 
+                 by = "obs_time", all.x = TRUE)
+temp_df[1:10,]
+rm(cum_bh_df)
+if (is.na(temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat_df$obs_time))])) 
+    temp_df$bh_cum[temp_df$obs_time == min(unique(tempdat$obs_time))] <- 0
+
+temp_df$bh_cum <- approx(x = temp_df$obs_time, y = temp_df$bh_cum, 
+                         xout = temp_df$obs_time, method = "constant", 
+                         rule =2)$y
+temp_df[1:10,]
+temp_df$bh[1] <- temp_df$bh_cum[1]
+temp_df$bh[1]
+temp_df$bh[2:nrow(temp_df)] <- diff(temp_df$bh_cum, 1)
+temp_df[1:10,]
+temp_df$bh_cum <- NULL
+temp_df[1:10,]
+tempdat_df <- merge(tempdat_df, temp_df, by = "obs_time", all.x = TRUE)
+tempdat_df[1:10,]
+rm(temp_df)
+tempdat_df <- tempdat_df[order(tempdat_df$id, tempdat_df$obs_time), ]
+tempdat_df[1:10,]
+tempdat_df <- tempdat_df[, c("id", setdiff(names(tempdat_df), "id"))]
+tempdat_df[1:10,]
+tempdat_df$risk[tempdat_df$selvar == 1] <- predict(model, type = "risk", centered = TRUE)
+tempdat_df[1:10,]
+print(names(tempdat_df))
+tempdat_df$hazard[tempdat_df$selvar == 1] <- with(tempdat_df[tempdat_df$selvar == 1, ], bh * risk)
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 0)
+  ] <- with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 0),
+    ], exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[
+  with(tempdat_df, selvar == 1 & exposure == 1)
+  ] <- 1 - with(tempdat_df[
+    with(tempdat_df, selvar == 1 & exposure == 1), ],
+    exp(-1 * bh * risk))
+tempdat_df[1:20,]
+tempdat_df$h_prob[tempdat_df$selvar == 0] <- 1
+tempdat_df[1:20, ]
+tempdat_df$cum_prod_prob <- unsplit(lapply(split(tempdat_df$h_prob, 
+                                                 tempdat_df$id), function(x) 
+                                                   cumprod(x)), tempdat_df$id)
+tempdat_df[1:20,]
+  return(tempdat_df)
+}
+```
+```{r}
+numer_TBipw_df=ipw_TBnumer(startstop_df)
+numer_TBipw_df
+```
+
+```{r}
+stab_TBipw_weights = numer_TBipw_df$cum_prod_prob/denom_TBipw_df$cum_prod_prob
+summary(stab_TBipw_weights)
+```
+```{r}
+summary(coxph(Surv(tstart, fuptime, event) ~ tb + cluster(id),
+              data = startstop_df, weights = stab_TBipw_weights))
+```
+We can compare the MSM to an unadjusted model:
+```{r}
+summary(coxph(Surv(tstart, fuptime, event) ~ tb + cluster(id),
+              data = startstop_df))
+```
+We can also compare the MSM to a standard model, using conditioning to adjust 
+for confounding:
+```{r}
+summary(coxph(Surv(tstart, fuptime, event) ~ tb + cd4.sqrt, data = startstop_df))
+```
+The estimated hazard ratio corresponding to the causal eect of TB on mortality is 2.25 (95%
+CI 1.35{3.75). Note that the estimate from an unadjusted model of 4.46 (95% CI 3.13{6.36) is
+an overestimate, since both TB and death are more likely at lower CD4 counts. The estimate
+from the conditional model of 1.28 (95% CI 0.79{2.06) is an underestimate, since the indirect
+effect of TB through CD4 count is "conditioned away", as explained in Robins (1997)
+and Robins et al. (1999).
+
+
